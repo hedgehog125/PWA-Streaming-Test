@@ -1,0 +1,26 @@
+{
+	"name": "pwa-streaming-test",
+	"version": "1.0.0",
+	"private": true,
+	"scripts": {
+		"dev": "vite dev",
+		"build": "vite build",
+		"testBuild": "cross-env DISABLE_BASE_URL=true vite build",
+		"preview": "http-server build -c-1",
+		"buildAndPreview": "npm run testBuild && npm run preview",
+		"check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
+		"check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch"
+	},
+	"devDependencies": {
+		"@sveltejs/kit": "^1.25.0",
+		"cross-env": "^7.0.3",
+		"http-server": "^14.1.1",
+		"svelte": "^4.0.0",
+		"svelte-check": "^3.0.1",
+		"sveltekit-adapter-versioned-worker": "^1.0.1",
+		"tslib": "^2.4.1",
+		"typescript": "^5.0.0",
+		"vite": "^4.0.0"
+	},
+	"type": "module"
+}
