@@ -6,6 +6,7 @@ import { modifyRequestHeaders } from "sveltekit-adapter-versioned-worker/worker/
 const NETWORK_CHUNK_SIZE = 250_000;
 const STORAGE_CHUNKS_PER_NETWORK_CHUNK = 5;
 const STORAGE_CHUNK_SIZE = NETWORK_CHUNK_SIZE / STORAGE_CHUNKS_PER_NETWORK_CHUNK;
+const MEDIA_STORAGE_NAME = `${STORAGE_PREFIX.slice(0, -1)}_Media`;
 
 export const handleFetch = virtualRoutes({
 	"/testVideo.mp4": async ({ request, event }) => {
@@ -48,37 +49,106 @@ export const handleFetch = virtualRoutes({
 			const [rangeStart, rangeEnd, outOf] = receivedRange;
 			const saveFromChunk = Math.ceil(rangeStart / STORAGE_CHUNK_SIZE);
 			const saveFromByte = saveFromChunk * STORAGE_CHUNK_SIZE;
+
+			const isUntilEnd = rangeEnd + 1 === outOf;
+			/**
+			 * @note This is exclusive
+			*/
 			// +1 because rangeEnd is 0 indexed and inclusive
+			const saveToChunk = isUntilEnd? Math.ceil(outOf / STORAGE_CHUNK_SIZE) : Math.floor((rangeEnd + 1) / STORAGE_CHUNK_SIZE);
 			/**
 			 * @note This is exclusive
 			 */
-			const saveToChunk = Math.floor((rangeEnd + 1) / STORAGE_CHUNK_SIZE);
-			/**
-			 * @note This is exclusive
-			 */
-			const saveToByte = saveToChunk * STORAGE_CHUNK_SIZE;
+			const saveToByte = isUntilEnd? rangeEnd : (saveToChunk * STORAGE_CHUNK_SIZE);
 
 
 			if (saveToByte - saveFromByte <= 0) return;
-
+			
+			const cache = await caches.open(MEDIA_STORAGE_NAME);
 			const reader = cloned.body!.getReader(); // It'll have a body because the original had one
-			const storedURLObj = new URL("/media", location.origin);
-			storedURLObj.searchParams.set("url", request.url);
-			storedURLObj.searchParams.set("chunk", saveFromChunk.toString());
 
-			const storedRes = new Response(new ReadableStream({
-				async start(controller) {
-					while (true) {
-						const { value } = await reader.read();
-						if (value == null) break; // Stream ended
-	
-						controller.enqueue(value);
+			let byteID = rangeStart;
+			let chunkID = saveFromChunk;
+			let excessBytesFromPrevChunk = 0;
+			let networkChunk: Nullable<Uint8Array> = null;
+			let done = false;
+			while (! done) {
+				const storedURLObj = new URL("/media", location.origin);
+				storedURLObj.searchParams.set("url", request.url);
+				storedURLObj.searchParams.set("chunk", chunkID.toString());
+
+				const storedRes = new Response(new ReadableStream({
+					async start(controller) {
+						let storageChunkLength = 0;
+
+						while (true) {
+							//await new Promise<void>(res => setTimeout(() => res(), 10)); // TODO
+							console.log("Storage chunk", chunkID);
+
+							if (networkChunk == null) {
+								networkChunk = (await reader.read()).value?? null;
+								console.log("Read");
+								if (networkChunk == null) {
+									console.log("Done");
+									done = true;
+									break;
+								}
+							}
+							else {
+								console.log("Reused");
+							}
+		
+							let sliceStart = Math.max((saveFromByte + excessBytesFromPrevChunk) - byteID, 0); // Prevent negatives
+							let sliceEnd = Math.max(saveToByte - byteID, 0);
+							
+							let slice = (sliceStart !== 0 || sliceEnd >= networkChunk.length)?
+								networkChunk.slice(sliceStart, sliceEnd)
+								: networkChunk
+							;
+							// TODO: avoid double slicing
+							console.log("Original slice", sliceStart + byteID, sliceEnd + byteID, "=", sliceEnd - sliceStart, slice.length);
+
+							let keepChunk = false;
+							const bytesBeforeNextStorageChunk = STORAGE_CHUNK_SIZE - storageChunkLength;
+							if (slice.length > bytesBeforeNextStorageChunk) {
+								excessBytesFromPrevChunk += bytesBeforeNextStorageChunk;
+								slice = networkChunk.slice(sliceStart, sliceStart + bytesBeforeNextStorageChunk);
+								keepChunk = true;
+
+								console.log("Used changed slice", sliceStart + byteID, sliceStart + bytesBeforeNextStorageChunk + byteID, "=", bytesBeforeNextStorageChunk, slice.length);
+							}
+							else {
+								console.log("Used original slice", sliceStart + byteID, sliceEnd + byteID, "=", sliceEnd - sliceStart, slice.length);
+							}
+
+
+							controller.enqueue(slice);
+							storageChunkLength += slice.length;
+							
+							if (! keepChunk) {
+								byteID += networkChunk.length;
+								networkChunk = null;
+								excessBytesFromPrevChunk = 0;
+
+								// console.log("Kept chunk");
+							}
+							if (storageChunkLength >= STORAGE_CHUNK_SIZE) {
+								// console.log("Started next chunk");
+								// done isn't set to true
+								break;
+							}
+						}
+
+						controller.close();
 					}
+				}));
 
-					controller.close();
-				},
-			}));
-			(await caches.open(`${STORAGE_PREFIX.slice(0, -1)}_Media`)).put(storedURLObj, storedRes);
+				await cache.put(storedURLObj, storedRes);
+				//await new Promise<void>(res => setTimeout(() => res(), 1000)); // TODO
+				if (done) break;
+
+				chunkID++;
+			}
 
 
 			function getReceivedRange(res: Response): Nullable<[startInclusive: number, endInclusive: number, outOf: number]> {
