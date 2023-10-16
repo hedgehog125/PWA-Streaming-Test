@@ -21,6 +21,7 @@ const config = {
 			isElevatedPatchUpdate: true,
 
 			lastInfo: standardGetLast("https://hedgehog125.github.io/PWA-Streaming-Test/versionedWorker.json", isTestBuild),
+			outputWorkerSourceMap: isTestBuild? "inline" : false,
 			sortFile: ({ href }) => {
 				if (href === "testVideo.mp4") return "never-cache";
 			}
